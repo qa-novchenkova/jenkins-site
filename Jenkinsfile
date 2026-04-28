@@ -2,63 +2,116 @@ pipeline {
     agent any
 
     environment {
-        NODE_PATH = "/Users/rusau/.nvm/versions/node/v16.14.2/bin"
-        PATH = "${env.NODE_PATH}:${env.PATH}"
+        // Путь к папке Node.js, где лежат node.exe и npm.cmd
+        NODE_HOME = 'C:\\Program Files\\nodejs'
+
+        // Добавляем Node.js в PATH для всех bat-команд
+        PATH = "${env.NODE_HOME};${env.PATH}"
+
+        // Порт, на котором будем запускать приложение
+        APP_PORT = '8082'
+
+        // Не даем Jenkins автоматически убить сервер между stage'ами
+        JENKINS_NODE_COOKIE = 'dontKillMe'
     }
 
     stages {
-
-        stage('Prepare Workspace') {
+        stage('Checkout') {
             steps {
-                dir('/Users/rusau/.jenkins/workspace/landing-page') {
-                    script {
-                        // Установите зависимости
-                        sh 'npm install'
+                // Забираем код из GitHub по настройкам Pipeline job
+                checkout scm
+            }
+        }
 
-                        // Соберите проект
-                        sh 'npm run build'
-                    }
-                }
+        stage('Versions') {
+            steps {
+                // Проверяем, что Jenkins видит Node.js и npm
+                bat '''
+                    @echo off
+                    chcp 65001 >nul
+
+                    echo [STEP] Node version
+                    node -v
+
+                    echo [STEP] NPM version
+                    call npm -v
+                '''
+            }
+        }
+
+        stage('Install') {
+            steps {
+                // Устанавливаем зависимости проекта
+                bat '''
+                    @echo off
+                    chcp 65001 >nul
+
+                    echo [STEP] Install dependencies
+                    call npm install --no-fund --no-audit
+                '''
+            }
+        }
+
+        stage('Build') {
+            steps {
+                // Собираем проект
+                bat '''
+                    @echo off
+                    chcp 65001 >nul
+
+                    echo [STEP] Build project
+                    call npm run build
+                '''
             }
         }
 
         stage('Start Server') {
             steps {
-                dir('/Users/rusau/.jenkins/workspace/landing-page') {
-                    script {
-                        // Запустите новый сервер в фоновом режиме на порту 8082
-                        sh 'npm start & echo $! > .pid'
-                        
-                        // Сохраните PID нового сервера, чтобы можно было остановить его после тестов
-                        script {
-                            env.NEW_SERVER_PID = sh(script: "cat .pid", returnStdout: true).trim()
-                        }
+                // Перед запуском освобождаем порт и стартуем сервер в фоне
+                bat '''
+                    @echo off
+                    chcp 65001 >nul
 
-                        // Дайте серверу время на запуск
-                        sleep 5
-                    }
-                }
+                    echo [STEP] Cleanup port %APP_PORT%
+                    for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":%APP_PORT%" ^| findstr "LISTENING"') do (
+                        taskkill /f /pid %%a /t 2>nul
+                    )
+
+                    echo [STEP] Start server
+                    start /B cmd /c "call npm run start -- --port %APP_PORT% > server_log.txt 2>&1"
+
+                    echo [STEP] Wait server
+                    timeout /t 10 /nobreak >nul
+                '''
             }
         }
 
-        stage('Run Tests') {
+        stage('Test') {
             steps {
-                dir('/Users/rusau/.jenkins/workspace/landing-page') {
-                    script {
-                        // Запустите тесты
-                        sh 'npm test'
-                    }
-                }
+                // Запускаем тесты против поднятого локального сервера
+                bat '''
+                    @echo off
+                    chcp 65001 >nul
+
+                    echo [STEP] Run tests
+                    call npm test
+                '''
             }
         }
     }
 
     post {
         always {
-            script {
-                // Остановите новый сервер
-                sh "kill ${env.NEW_SERVER_PID}"
-            }
+            // Этот блок выполнится всегда: и при успехе, и при падении тестов
+            bat '''
+                @echo off
+                chcp 65001 >nul
+
+                echo [STEP] Final cleanup port %APP_PORT%
+                for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":%APP_PORT%" ^| findstr "LISTENING"') do (
+                    taskkill /f /pid %%a /t 2>nul
+                )
+            '''
         }
     }
 }
